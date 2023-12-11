@@ -1,0 +1,69 @@
+/*
+ * main.c
+ *
+ *
+ * Author: ahmed waleed
+ */
+
+#include "LCD.h"
+#include "LM35_sensor.h"
+#include "ADC.h"
+#include "avr/io.h"
+#include "DcMotor.h"
+#include <string.h>
+#include "std_types.h"
+
+
+int main(void){
+	/* Set Configuration of ADC */
+	ADC_configType config_adc={INTERNAL_VOLTAGE,DIVISION_8};
+
+	ADC_init( &config_adc); /* Initialize ADC*/
+
+	/* Initialize Motor */
+	DcMotor_Init();
+
+    /* Initialize LCD */
+	LCD_init();
+
+	SREG |= (1<<7);/* Enable Global Interrupts */
+
+	uint8 Temp_value;/*Temperature value*/
+	uint8 fan_status[8]="OFF";/*Status of Fan*/
+
+	while(1){
+		Temp_value= LM35_getTemperature(); /*Get reading from sensor*/
+
+		 /*If the temperature is less than 30C turn off the fan*/
+		if(Temp_value<30){
+			strcpy(fan_status,(uint8*)"OFF");
+			DcMotor_Rotate(CLOCK_WISE,0);
+		}/*If the temperature is greater than or equal 30C turn on the fan with 25% of its maximum speed.*/
+		else if(Temp_value>=30 && Temp_value<60){
+			strcpy(fan_status,(uint8*)"ON");
+			DcMotor_Rotate(CLOCK_WISE,25);
+		}/*If the temperature is greater than or equal 60C turn on the fan with 50% of its maximum speed*/
+		else if(Temp_value>=60 && Temp_value<90){
+			strcpy(fan_status,(uint8*)"ON");
+			DcMotor_Rotate(CLOCK_WISE,50);
+		}/*If the temperature is greater than or equal 90C turn on the fan with 75% of its maximum speed.*/
+		else if(Temp_value>=90 && Temp_value<120){
+			strcpy(fan_status,(uint8*)"ON");
+			DcMotor_Rotate(CLOCK_WISE,75);
+		}else{
+			strcpy(fan_status,(uint8*)"ON");
+			DcMotor_Rotate(CLOCK_WISE,100);
+		}
+		/*   Display on LCD   */
+		LCD_displayStringRowColumn(0,3,"Fan is ");
+		LCD_displayString(fan_status);
+		LCD_displayString(" ");
+		LCD_displayStringRowColumn(1,3,"Temp is ");
+		LCD_intgerToString(Temp_value);
+		if(Temp_value<100){
+			LCD_displayString("  ");
+		}
+
+	}
+
+}

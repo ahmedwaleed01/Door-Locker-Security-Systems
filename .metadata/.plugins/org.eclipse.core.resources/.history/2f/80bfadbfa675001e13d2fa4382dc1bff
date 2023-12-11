@@ -1,0 +1,147 @@
+/*
+ * main.c
+ *
+ *  Created on: 24 Oct 2023
+ *      Author: ahmed waleed
+ */
+
+
+
+#include "std_types.h"
+#include "external_eeprom.h"
+#include "Timer.h"
+#include "buzzer.h"
+#include "uart.h"
+#include "twi.h"
+#include "util/delay.h"
+#include "gpio.h"
+#include "avr/io.h"
+
+
+#define  Check_Password              0xFF  //
+#define  rotate_motor_CW             0xEF
+#define  rotate_motor_ACW            0xDF
+#define  Activate_Buzzer             0xBF  //
+#define  GET_PASSWORD                0xAF  //
+#define  send_first_pass             0x9F  //
+#define  send_reEntered_pass         0x8F
+#define  SUCCESS                     1
+#define  ERROR                       0
+
+void BuzzerOffCallBack(void);
+
+int main(void){
+	/*
+	 * Set configuration of Uart
+	 * parity bit is disabled
+	 * one bit stop
+	 * character size 8
+	 * baud rate =9600
+	 * */
+
+	Config_Uart config_uart={DISABLED,ONE_BIT,
+			BIT_8,9600
+	};
+	UART_init(&config_uart);
+
+	TWI_ConfigType config_twi={0x02,0x01};
+	TWI_init(&config_twi);
+
+	//	Buzzer_init();
+
+	uint8 message;
+
+
+
+	while(1){
+
+
+		message=UART_recieveByte();
+
+
+		if(message==GET_PASSWORD){
+			uint16 password;
+			uint8 val;
+			EEPROM_readByte(0x0311, &val);
+			_delay_ms(10);
+			password=val<<8;
+			//			EEPROM_writeByte(0x0320,&val);
+			password|=val;
+
+			UART_sendByte(password>>8);
+			_delay_ms(10);
+			UART_sendByte(password&0x0f);
+
+
+		}else if(message==send_first_pass){
+			uint16 password;
+			uint16 re_entered;
+			password=UART_recieveByte()<<8;
+			_delay_ms(10);
+			password|=UART_recieveByte();
+			_delay_ms(10);
+			re_entered=UART_recieveByte()<<8;
+			_delay_ms(10);
+			re_entered|=UART_recieveByte();
+
+			if(password==re_entered){
+				EEPROM_writeByte(0x0311,password>>8);
+				_delay_ms(10);
+				EEPROM_writeByte(0x0330, password&0x00ff);
+
+				UART_sendByte(SUCCESS);
+
+			}else{
+				UART_sendByte(ERROR);
+			}
+		}else if(message==Activate_Buzzer){
+			Buzzer_on();
+
+			/*
+			 * set configuration of timer
+			 * start value =0
+			 * compare value = 7500
+			 * prescalar = 64
+			 * mode of time is compare mode
+			 * */
+			Timer1_ConfigType config_timer1={0,1875,CLOCK_64,CTC};
+			Timer1_setCallBack(BuzzerOffCallBack);
+			Timer1_init(&config_timer1);
+		}else if(message==Check_Password){
+			uint16 passwordRead;
+			uint16 password;
+			uint8 val;
+			passwordRead=UART_recieveByte()<<8;
+			_delay_ms(10);
+			passwordRead|=UART_recieveByte();
+			_delay_ms(10);
+
+
+
+			EEPROM_readByte(0x0311, &val);
+			_delay_ms(100);
+			password=val<<8;
+			EEPROM_readByte(0x0220,&val);
+			password|=val;
+
+			if(password==passwordRead){
+				UART_sendByte(SUCCESS);
+			}else{
+				UART_sendByte(ERROR);
+
+			}
+
+		}else if(message==rotate_motor_CW){
+			DDRA|=1<<4;
+			PORTA|=1<<4;
+		}
+
+	}
+
+}
+
+void BuzzerOffCallBack(void){
+
+	Timer1_deInit();
+	Buzzer_off();
+}

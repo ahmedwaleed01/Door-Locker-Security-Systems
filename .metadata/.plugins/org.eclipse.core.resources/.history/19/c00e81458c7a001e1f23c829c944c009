@@ -1,0 +1,317 @@
+/*
+ * main.c
+ *
+ *
+ * Author: ahmed waleed
+ */
+
+#include "keypad.h"
+#include "LCD.h"
+#include "std_types.h"
+#include "uart.h"
+#include "Timer.h"
+#include "avr/io.h"
+#include "util/delay.h"
+
+#define  Check_Password              0xFF
+#define  rotate_motor_CW             0xEF
+#define  ROTATE_MOTOR_ACW            0xDF
+#define  motor_Hold                  0x1F
+#define  Activate_Buzzer             0xBF
+#define  GET_PASSWORD                0xAF
+#define  send_first_pass             0x9F
+#define  send_reEntered_pass         0x8F
+
+uint8 CreateSystemPassword();
+void MainOptions();
+void ChangePassword();
+void OpenDoor();
+uint8 checkPasswordCorrection();
+uint8 g_locking=0;
+uint8 g_holding=0;
+uint8 g_unlocking=0;
+uint8 g_error=0;
+void motorCW_callback(void);
+void motorhold_callback(void);
+void motorACW_callback(void);
+void Buzzer_Callback(void);
+
+int main(void){
+	/* Initlize LCD */
+	LCD_init();
+	/*
+	 * Set configuration of Uart
+	 * parity bit is disabled
+	 * one bit stop
+	 * character size 8
+	 * baud rate =9600
+	 * */
+	Config_Uart config_uart={DISABLED,ONE_BIT,
+			BIT_8,9600
+	};
+
+	UART_init(&config_uart);
+	/*Enbale Global interrupt*/
+	SREG=(1<<7);
+	/* Create password */
+	CreateSystemPassword();
+
+	while(1){
+		MainOptions();
+	}
+
+}
+/* create Password */
+uint8 CreateSystemPassword(){
+	uint8 check;
+	do{
+		uint8 i;
+		uint16 re_enter=0;
+		uint16 password=0;
+		/*Display on lcd entering password  and move the cursor */
+		LCD_clearScreen();
+		LCD_displayString("Plz Enter new");
+		LCD_moveCursor(1,0);
+		LCD_displayString("Pass: ");
+		/*Ask user to enter Five number from Keypad as a password */
+		for(i=0;i<5;i++){
+			password=password*10+KEYPAD_getPressedKey();
+			LCD_displayCharacter('*');
+			_delay_ms(200);
+		}
+		/*
+		 * waiting to get enter '=' from user to confirm
+		 * */
+		uint8 enter_value;
+		while(enter_value!='='){
+			enter_value=KEYPAD_getPressedKey();
+			_delay_ms(200);
+		}
+		/* clear the screen of lcd
+		 * ask the user to re-enter password
+		 * */
+		LCD_clearScreen();
+		LCD_displayString("Plz re-enter the");
+		LCD_moveCursor(1,0);
+		LCD_displayString("same Pass: ");
+		for(i=0;i<5;i++){
+			re_enter=re_enter*10+KEYPAD_getPressedKey();
+			LCD_displayCharacter('*');
+			_delay_ms(200);
+		}
+		/*
+		 * waiting to get enter '=' from user to confirm
+		 * */
+		enter_value=0;
+		while(enter_value!='='){
+			enter_value=KEYPAD_getPressedKey();
+			_delay_ms(200);
+		}
+		/*
+		 * send to Control_ECU the entered password
+		 * and its re-entered password to check them
+		 * */
+		if(enter_value=='='){
+			UART_sendByte(send_first_pass);
+			_delay_ms(10);
+			UART_sendByte(password>>8);
+			_delay_ms(10);
+			UART_sendByte(password&0x00ff);
+
+
+			_delay_ms(10);
+			UART_sendByte(re_enter>>8);
+			_delay_ms(10);
+			UART_sendByte(re_enter&0x00ff);
+			_delay_ms(10);
+			check=UART_recieveByte();
+		}
+		enter_value=0;
+	}while(check==0);
+	return check;
+
+}
+/* Main Options List */
+void MainOptions(){
+	/*
+	 * display on LCD
+	 * Get from user option to open door --> call function OpenDoor()
+	 * or to change password -->call function changePassword()
+	 * */
+	uint8 option_value=0;
+	LCD_clearScreen();
+	LCD_displayString("+ : Open Door");
+	LCD_moveCursor(1,0);
+	LCD_displayString("- : Change Pass");
+
+	do{
+		option_value=KEYPAD_getPressedKey();
+		_delay_ms(200);
+	}while(option_value!='+' && option_value!='-');
+
+	if(option_value=='+'){
+		OpenDoor();
+	}else if(option_value=='-'){
+		ChangePassword();
+	}
+}
+/*Change Password */
+void ChangePassword(){
+	/*ask user to enter old password and check its correction
+	 * then call function create password
+	 * */
+	if(checkPasswordCorrection()){
+		CreateSystemPassword();
+	}
+}
+/* Open Door Function */
+void OpenDoor(){
+	/* Check the correctness of password then */
+	if(checkPasswordCorrection()){
+		LCD_clearScreen();
+		LCD_displayString("Door is Unlocking");
+		/*
+		 * set configuration of timer
+		 * start value =0
+		 * compare value = 31250  --> count 1 sec
+		 * prescalar = 256
+		 * mode of time is compare mode
+		 * */
+		UART_sendByte(rotate_motor_CW);  /*Send to Control mc to rotate clock wise */
+		Timer1_ConfigType config_timer1={0,31250,CLOCK_256,CTC};
+		Timer1_setCallBack(motorCW_callback);
+		Timer1_init(&config_timer1);
+		/*waiting for timer to count 15 sec*/
+		while(g_locking!=15);
+		g_locking=0;
+		/*stop timer*/
+		Timer1_deInit();
+
+		LCD_clearScreen();
+		LCD_displayString("Door is Open");
+		/*
+		 * Turn on timer to count 3 sec for holding
+		 * Set call back function
+		 * Send to Control mc to hold the door
+		 *  */
+		UART_sendByte(motor_Hold);
+		Timer1_setCallBack(motorhold_callback);
+		Timer1_init(&config_timer1);
+		/*waiting for timer to count 3 sec*/
+		while(g_holding!=3);
+		g_holding=0;
+		/*stop timer*/
+		Timer1_deInit();
+
+		LCD_clearScreen();
+		LCD_displayString("Door is locking");
+		/*
+		 * Turn on timer to count 15 sec for closing
+		 * Set call back function
+		 * Send to Control mc to rotate motor anti clockwise for closing
+		 *  */
+		UART_sendByte(ROTATE_MOTOR_ACW);
+		Timer1_setCallBack(motorACW_callback);
+		Timer1_init(&config_timer1);
+		/*waiting for timer to count 15 sec*/
+		while(g_unlocking!=15);
+		g_unlocking=0;
+		/*stop timer*/
+		Timer1_deInit();
+
+		LCD_clearScreen();
+	}
+//	MainOptions();
+}
+/*Check password entered by user */
+uint8 checkPasswordCorrection(){
+	/*
+	 * Ask user to enter password
+	 * send the password to control_ECU to check the password in EEPROM memory
+	 * recieve an checking correction from control_ECU correct or incorrect
+	 * it will give the user a plenty for 3 attempts only
+	 * */
+	uint8 RecievedValue;
+	uint8 iterator_incorrect_password=0;
+	do{
+		LCD_clearScreen();
+		LCD_displayString("Plz Enter Pass:");
+		LCD_moveCursor(1,0);
+		uint16 password=0;
+		uint8 i;
+		for(i=0;i<5;i++){
+			password=password*10+KEYPAD_getPressedKey();
+			LCD_displayCharacter('*');
+			_delay_ms(200);
+		}
+		/*
+		 * waiting to get enter '=' from user to confirm
+		 * */
+		uint8 enter_value;
+		while(enter_value!='='){
+			enter_value=KEYPAD_getPressedKey();
+			_delay_ms(200);
+		}
+
+		UART_sendByte(Check_Password);
+		_delay_ms(10);
+		UART_sendByte(password>>8);
+		_delay_ms(10);
+		UART_sendByte(password&0x00ff);
+		/* if the password is correct it returns one else zero */
+		RecievedValue=UART_recieveByte();
+		if(RecievedValue==0)
+			iterator_incorrect_password++;
+
+		enter_value=0;
+	}while(iterator_incorrect_password<3 &&RecievedValue==0);
+
+	if(iterator_incorrect_password==3){
+		LCD_clearScreen();
+		LCD_displayString("      ERROR     ");
+		/*
+		 * set configuration of timer
+		 * start value =0
+		 * compare value = 31250  --> count 1 sec
+		 * prescalar = 256
+		 * mode of time is compare mode
+		 * */
+		UART_sendByte(Activate_Buzzer);   /* send to control mc to activate the buzzer */
+		Timer1_ConfigType config_timer1={0,31250,CLOCK_256,CTC};
+		Timer1_setCallBack(Buzzer_Callback);
+		Timer1_init(&config_timer1);
+		/* Waiting the timer to count 1 min*/
+		while(g_error!=60);
+		g_error=0;
+		/*stop timer*/
+		Timer1_deInit();
+	}
+	return  RecievedValue;
+}
+
+void motorCW_callback(void){
+	/*COUNT 1 SEC
+	 * */
+	g_locking++;
+}
+/*Call Back Function after the timer counts 3 secs to hold motor */
+void motorhold_callback(void){
+	/*COUNT 1 SEC
+	 * */
+	g_holding++;
+
+}
+/*Call Back Function after the timer counts 15 secs to rotate motor anti clock wise*/
+void motorACW_callback(void){
+	/*COUNT 1 SEC
+	 * */
+	g_unlocking++;
+
+}
+/*Buzzer Callback function */
+void Buzzer_Callback(void){
+	/*COUNT 1 SEC
+	 * */
+	g_error++;
+
+}
